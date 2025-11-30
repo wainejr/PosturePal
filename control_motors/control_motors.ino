@@ -1,6 +1,7 @@
 #define IS_ESP32
 
 const float MAX_TIME_READ_ZERO = 0.5; // after this time reading zeros and car moving, it should stop
+const float MAX_TIME_READ_ZERO_START = 1.2; // special time for starting
 const float MACHINE_STATE_UPDATE_INTERVAL_MS = 50;
 
 const float CAR_WHEEL_R = 0.00325;
@@ -12,8 +13,9 @@ const float CAR_MAX_VELOCITY = 1; // m/s
 const uint8_t IR_HITS_TO_STOP = 2;
 
 const float MAX_CTRL_CURRENT_READ = 1;
-const int CTRL_MOVING_AVG_SAMPLES = 4;
-float ctrl_avg_alpha = 0.3; // 0-1, alpha for "decay" of PID to stable value (0.1=slow, 0.5=fast)
+// 0-1, alpha for "decay" of PID to stable value (0.1=slow, 0.5=fast)
+float ctrl_avg_alpha_up = 0.3;
+float ctrl_avg_alpha_down = 0.1;
 float ctrl_target_vel = 0.18;
 float ctrl_P = 4;
 float ctrl_I = 5;
@@ -192,6 +194,7 @@ float ctrl_mov_avg_val = 0;
 
 unsigned long ctrl_sensor_last_read = 0;
 unsigned long ctrl_sensor_first_zero_read = 0;
+bool ctrl_car_has_started_moving = false;
 bool ctrl_sensor_is_zero = false;
 
 float ctrl_sensor_time_reading_zero(){
@@ -208,6 +211,7 @@ void ctrl_reset(){
     ctrl_sensor_last_read = 0;
     ctrl_sensor_first_zero_read = 0;
     ctrl_sensor_is_zero = false;
+    ctrl_car_has_started_moving = false;
     ctrl_mov_avg_val = 0;
 }
 
@@ -234,6 +238,7 @@ void ctrl_update_read_values(float dist){
       }
     } else {
       // update last read only when vel is read
+      ctrl_car_has_started_moving = true;
       ctrl_sensor_is_zero = false;
       ctrl_sensor_last_read = now;
       ctrl_sensor_first_zero_read = now;
@@ -259,7 +264,8 @@ void ctrl_update_out_pwm() {
     float D = ctrl_D * ctrl_kd_err;
 
     const float curr_pwm = P + I + D;
-    ctrl_mov_avg_val = ctrl_mov_avg_val * (1.0 - ctrl_avg_alpha) + curr_pwm * ctrl_avg_alpha;
+    const float alpha_use = curr_pwm >= ctrl_mov_avg_val ? ctrl_avg_alpha_up : ctrl_avg_alpha_down;
+    ctrl_mov_avg_val = ctrl_mov_avg_val * (1.0 - alpha_use) + curr_pwm * alpha_use;
     ctrl_out_pwm = ctrl_mov_avg_val;
     if(ctrl_out_pwm > 1){
       ctrl_out_pwm = 1;
@@ -394,9 +400,10 @@ void treat_cmd(String cmd) {
 bool mov_must_stop(){
   if(mov_state == MOV_STOPPED) return false;
 
-  if(ctrl_sensor_time_reading_zero() > MAX_TIME_READ_ZERO){
-    MPRINT("parou tempo zerado (%.3f s lendo) (%.3f s mov)\n", 
-        ctrl_sensor_time_reading_zero(), time_since_mov_start());
+  const float limit_time_use = ctrl_car_has_started_moving? MAX_TIME_READ_ZERO : MAX_TIME_READ_ZERO_START;
+  if(ctrl_sensor_time_reading_zero() > limit_time_use){
+    MPRINT("parou tempo zerado (%.3f s lendo) (%.3f s mov) (limit %.3f s)\n", 
+        ctrl_sensor_time_reading_zero(), time_since_mov_start(), limit_time_use);
     return true;
   }
   if(mov_state == MOV_LEFT){
